@@ -97,6 +97,9 @@ public class FlutterView extends SurfaceView
     private boolean mIsSoftwareRenderingEnabled = false; // using the software renderer or not
     private InputConnection mLastInputConnection;
 
+    private MethodChannel mFlutterPlatformChannel;
+    private PlatformPlugin mPlatformPlugin;
+
     public FlutterView(Context context) {
         this(context, null);
     }
@@ -106,7 +109,7 @@ public class FlutterView extends SurfaceView
     }
 
     public FlutterView(Context context, AttributeSet attrs, FlutterNativeView nativeView) {
-        super(context, attrs);
+        super(context.getApplicationContext(), attrs);
 
         mIsSoftwareRenderingEnabled = nativeGetIsSoftwareRenderingEnabled();
         mAnimationScaleObserver = new AnimationScaleObserver(new Handler());
@@ -115,13 +118,11 @@ public class FlutterView extends SurfaceView
         setFocusable(true);
         setFocusableInTouchMode(true);
 
-        Activity activity = (Activity) getContext();
         if (nativeView == null) {
-            mNativeView = new FlutterNativeView(activity.getApplicationContext());
+            mNativeView = new FlutterNativeView(context.getApplicationContext());
         } else {
             mNativeView = nativeView;
         }
-        mNativeView.attachViewAndActivity(this, activity);
 
         mSurfaceCallback = new SurfaceHolder.Callback() {
             @Override
@@ -156,17 +157,41 @@ public class FlutterView extends SurfaceView
         mFlutterLifecycleChannel = new BasicMessageChannel<>(this, "flutter/lifecycle", StringCodec.INSTANCE);
         mFlutterSystemChannel = new BasicMessageChannel<>(this, "flutter/system", JSONMessageCodec.INSTANCE);
         mFlutterSettingsChannel = new BasicMessageChannel<>(this, "flutter/settings", JSONMessageCodec.INSTANCE);
+        mFlutterPlatformChannel = new MethodChannel(this, "flutter/platform", JSONMethodCodec.INSTANCE);
 
-        PlatformPlugin platformPlugin = new PlatformPlugin(activity);
-        MethodChannel flutterPlatformChannel = new MethodChannel(this, "flutter/platform", JSONMethodCodec.INSTANCE);
-        flutterPlatformChannel.setMethodCallHandler(platformPlugin);
-        addActivityLifecycleListener(platformPlugin);
         mImm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
         mTextInputPlugin = new TextInputPlugin(this);
 
 
         setLocales(getResources().getConfiguration());
         setUserSettings();
+
+        attachActivity((Activity) context);
+    }
+
+    /**
+     * Call this method when reuse this FlutterView on another Activity.
+     */
+    public void attachActivity(Activity activity) {
+        detachActivity();
+        mNativeView.attachViewAndActivity(this, activity);
+        mPlatformPlugin = new PlatformPlugin(activity);
+        mFlutterPlatformChannel.setMethodCallHandler(mPlatformPlugin);
+        addActivityLifecycleListener(mPlatformPlugin);
+    }
+
+    /**
+     * Call this method on Activity onDestroy in case of memory leak on Activity.
+     */
+    public void detachActivity() {
+        // mPlatformPlugin hold the strong reference of Activity, need to release.
+        if (mPlatformPlugin != null) {
+            removeActivityLifecycleListener(mPlatformPlugin);
+            mPlatformPlugin = null;
+            if (mNativeView != null && mNativeView.isAttached()) {
+                mNativeView.detach();
+            }
+        }
     }
 
     private void encodeKeyEvent(KeyEvent event, Map<String, Object> message) {
@@ -229,6 +254,10 @@ public class FlutterView extends SurfaceView
 
     public void addActivityLifecycleListener(ActivityLifecycleListener listener) {
         mActivityLifecycleListeners.add(listener);
+    }
+
+    public void removeActivityLifecycleListener(ActivityLifecycleListener listener) {
+        mActivityLifecycleListeners.remove(listener);
     }
 
     public void onStart() {
